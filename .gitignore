@@ -52,8 +52,9 @@ tmp/
 temp/
 
 # Config files (optional - uncomment if you want to ignore local configs)
-# config/mcpServers.json
+# config/mcp_servers.json
 
 # Test output
 test-results/
 playwright-report/ 
+config/mcp_servers.json

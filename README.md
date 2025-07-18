@@ -11,6 +11,7 @@ A central proxy server that aggregates multiple upstream MCP (Model Context Prot
 - **Automatic Reconnection**: Handles upstream server disconnections with automatic retry and exponential backoff
 - **Real-time Updates**: Live capability updates as upstream servers connect/disconnect
 - **Fast Startup Mode**: Server starts immediately while upstream connections initialize in background
+- **Dynamic Configuration**: Hot-reload configuration changes without restarting the server
 - **Session Management**: 30-minute session timeout with automatic cleanup of inactive sessions
 
 ## Architecture
@@ -25,14 +26,20 @@ A central proxy server that aggregates multiple upstream MCP (Model Context Prot
 ┌─────────────┐    │  │ Capability   │    ┌─────────────┐
 │  Downstream │    │  │ Registry     │    │  Upstream   │
 │   Client    │◄──►│  │              │◄──►│   Server    │
-│ (HTTP/MCP)  │    │  ├──────────────┤    │ (stdio/sse/ │
-└─────────────┘    │  │ Request      │    │ streamable) │
-                   │  │ Router       │    └─────────────┘
-┌─────────────┐    │  │              │    ┌─────────────┐
-│  Downstream │    │  │ Session      │    │  Upstream   │
-│   Client    │◄──►│  │ Manager      │◄──►│   Server    │
 │ (HTTP/MCP)  │    │  │              │    │ (stdio/sse/ │
-└─────────────┘    │  └──────────────┤    │ streamable) │
+└─────────────┘    │  ├──────────────┤    │ streamable) │
+                   │  │ Request      │    └─────────────┘
+┌─────────────┐    │  │ Router       │    ┌─────────────┐
+│  Downstream │    │  │              │    │  Upstream   │
+│   Client    │◄──►│  │ Session      │    │   Server    │
+│ (HTTP/MCP)  │    │  │ Manager      │◄──►│ (stdio/sse/ │
+└─────────────┘    │  │              │    │ streamable) │
+                   │  └──────────────┤    └─────────────┘
+                   │  │ Config       │    ┌─────────────┐
+                   │  │ Watcher      │    │  Upstream   │
+                   │  │              │    │   Server    │
+                   │  │              │◄──►│ (stdio/sse/ │
+                   │  └──────────────┤    │ streamable) │
                    └─────────────────┘    └─────────────┘
 ```
 
@@ -59,12 +66,12 @@ npm run build
 
 3. Create configuration file:
 ```bash
-cp config/mcpServers.json.example config/mcpServers.json
+cp config/mcp_servers.json.example config/mcp_servers.json
 ```
 
 ## Configuration
 
-Edit `config/mcpServers.json` to configure your upstream servers:
+Edit `config/mcp_servers.json` to configure your upstream servers:
 
 ```json
 {
@@ -87,6 +94,53 @@ Edit `config/mcpServers.json` to configure your upstream servers:
     }
   }
 }
+```
+
+### Dynamic Configuration
+
+1mcp supports **hot-reloading** of configuration changes. You can add, remove, or modify upstream servers without restarting the server:
+
+1. **Add a new server**: Simply add a new entry to `mcp_servers.json` and save the file
+2. **Remove a server**: Delete the server entry from the configuration file
+3. **Update server config**: Modify any server configuration and save
+
+The server will automatically:
+- ✅ Detect configuration changes
+- ✅ Connect to new servers
+- ✅ Remove disconnected servers
+- ✅ Update existing server configurations
+- ✅ Notify connected clients of capability changes
+
+**Example**: Add a new server while 1mcp is running:
+```json
+{
+  "mcpServers": {
+    "existing-server": { ... },
+    "new-server": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["@new/mcp-server"]
+    }
+  }
+}
+```
+
+After saving the file, you'll see:
+```
+📝 Configuration file changed: /path/to/config/mcp_servers.json
+🔄 Configuration file changed, updating upstream connections...
+📋 Configuration changes detected:
+  ➕ Servers to add: 1
+  ➖ Servers to remove: 0
+  🔄 Servers to update: 0
+➕ Adding new server: new-server
+✅ Added server: new-server
+📊 Configuration update complete (1234ms):
+  ✅ Removed: 0 servers
+  ✅ Updated: 0 servers
+  ✅ Added: 1 servers
+  ❌ Failed to add: 0 servers
+✅ Configuration update completed successfully
 ```
 
 ### Server Types
@@ -161,7 +215,7 @@ Options:
   --port=<number>     Server port (default: 3000)
   --host=<string>     Server host (default: localhost)
   --no-cors           Disable CORS (default: enabled)
-  --config=<path>     Configuration file path (default: config/mcpServers.json)
+  --config=<path>     Configuration file path (default: config/mcp_servers.json)
   --help, -h          Show this help message
 
 Examples:
@@ -194,12 +248,20 @@ When the server starts, it provides these endpoints:
 3. **Forwarding**: Removes prefix and forwards request to upstream server
 4. **Response**: Returns upstream response to downstream client
 
+### Dynamic Configuration Management
+
+1. **File Watching**: Monitors `mcp_servers.json` for changes using Node.js file watcher
+2. **Change Detection**: Detects additions, removals, and modifications to server configurations
+3. **Connection Management**: Automatically connects to new servers and disconnects from removed ones
+4. **Capability Updates**: Re-registers capabilities when servers are added/removed
+5. **Client Notification**: Notifies connected clients of capability changes via `listChanged` events
+
 ### Session Management
 
 - Each client connection gets a unique session ID
-- Sessions timeout after 30 minutes of inactivity
-- Automatic cleanup runs every 5 minutes
+- Sessions persist indefinitely (no timeout or cleanup)
 - Session state maintained in memory with connection pooling
+- Streamable HTTP transport provides reliable bidirectional communication
 
 ### Example Flow
 
@@ -266,7 +328,8 @@ Returns server capabilities and endpoint information:
   "endpoints": {
     "mcp": "/mcp",
     "health": "/health",
-    "info": "/mcp/info"
+    "info": "/mcp/info",
+    "session-info": "/mcp/session-info"
   }
 }
 ```

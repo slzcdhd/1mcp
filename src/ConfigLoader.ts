@@ -3,16 +3,23 @@
  * Reads and validates mcpServers.json configuration files
  */
 
+import { watch } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
-import { McpServersConfig, UpstreamServerConfig, StdioServerConfig, SseServerConfig, StreamableHttpServerConfig } from './types.js';
+import { McpServersConfig, SseServerConfig, StdioServerConfig, StreamableHttpServerConfig, UpstreamServerConfig } from './types.js';
 
 export class ConfigLoader {
   private static readonly DEFAULT_CONFIG_PATHS = [
-    'config/mcpServers.json',
-    'mcpServers.json',
-    './mcpServers.json'
+    'config/mcp_servers.json',
+    'mcp_servers.json',
+    './mcp_servers.json'
   ];
+
+  private static configWatchers = new Map<string, {
+    watcher: any;
+    lastModified: number;
+    callback: (config: McpServersConfig) => void;
+  }>();
 
   /**
    * Load configuration from the specified file or default locations
@@ -49,6 +56,93 @@ export class ConfigLoader {
     }
     
     throw new Error(`No valid configuration file found. Tried: ${pathsToTry.join(', ')}`);
+  }
+
+  /**
+   * Start watching a configuration file for changes
+   */
+  static async startWatching(configPath: string, callback: (config: McpServersConfig) => void): Promise<void> {
+    const resolvedPath = path.resolve(configPath);
+    
+    // Stop existing watcher if any
+    this.stopWatching(configPath);
+    
+    try {
+      // Verify the file exists and is readable
+      await fs.access(resolvedPath);
+      
+      // Get initial file stats
+      const stats = await fs.stat(resolvedPath);
+      
+      // Create file watcher
+      const watcher = watch(resolvedPath, { persistent: true }, async (eventType, filename) => {
+        if (eventType === 'change') {
+          try {
+            // Add a small delay to ensure file write is complete
+            await new Promise(resolve => setTimeout(resolve, 100));
+            
+            // Check if file was actually modified
+            const newStats = await fs.stat(resolvedPath);
+            const watcherInfo = this.configWatchers.get(configPath);
+            
+            if (watcherInfo && newStats.mtime.getTime() > watcherInfo.lastModified) {
+              console.log(`📝 Configuration file changed: ${resolvedPath}`);
+              
+              // Load and validate new configuration
+              const newConfig = await this.load(configPath);
+              
+              // Update last modified time
+              watcherInfo.lastModified = newStats.mtime.getTime();
+              
+              // Call the callback with new configuration
+              callback(newConfig);
+            }
+          } catch (error) {
+            console.error(`❌ Failed to reload configuration from ${resolvedPath}:`, error);
+          }
+        }
+      });
+      
+      // Store watcher information
+      this.configWatchers.set(configPath, {
+        watcher,
+        lastModified: stats.mtime.getTime(),
+        callback
+      });
+      
+      console.log(`👀 Started watching configuration file: ${resolvedPath}`);
+      
+    } catch (error) {
+      throw new Error(`Failed to start watching configuration file ${resolvedPath}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Stop watching a configuration file
+   */
+  static stopWatching(configPath: string): void {
+    const watcherInfo = this.configWatchers.get(configPath);
+    if (watcherInfo) {
+      watcherInfo.watcher.close();
+      this.configWatchers.delete(configPath);
+      console.log(`🛑 Stopped watching configuration file: ${configPath}`);
+    }
+  }
+
+  /**
+   * Stop all configuration file watchers
+   */
+  static stopAllWatchers(): void {
+    for (const [configPath] of this.configWatchers) {
+      this.stopWatching(configPath);
+    }
+  }
+
+  /**
+   * Get the list of currently watched configuration files
+   */
+  static getWatchedFiles(): string[] {
+    return Array.from(this.configWatchers.keys());
   }
 
   /**
@@ -225,7 +319,7 @@ export class ConfigLoader {
   /**
    * Create a default configuration file
    */
-  static async createDefaultConfig(outputPath = 'config/mcpServers.json'): Promise<void> {
+  static async createDefaultConfig(outputPath = 'config/mcp_servers.json'): Promise<void> {
     const defaultConfig: McpServersConfig = {
       mcpServers: {
         "example-stdio": {

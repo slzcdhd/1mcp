@@ -41,7 +41,7 @@ export interface StreamableHttpServerConfig {
 export type UpstreamServerConfig = StdioServerConfig | SseServerConfig | StreamableHttpServerConfig;
 
 /**
- * Configuration file structure for mcpServers.json
+ * Configuration file structure for mcp_servers.json
  */
 export interface McpServersConfig {
   mcpServers: Record<string, UpstreamServerConfig>;

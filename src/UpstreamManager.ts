@@ -4,16 +4,16 @@
  */
 
 import { EventEmitter } from 'events';
+import { AutoConnector } from './connectors/AutoConnector.js';
 import { BaseConnector } from './connectors/BaseConnector.js';
 import { StdioConnector } from './connectors/StdioConnector.js';
 import { StreamableHttpConnector } from './connectors/StreamableHttpConnector.js';
-import { AutoConnector } from './connectors/AutoConnector.js';
-import { 
-  McpServersConfig, 
-  UpstreamServerConfig, 
-  ServerConnection, 
-  ServerStatus,
-  CapabilityRegistry 
+import {
+    CapabilityRegistry,
+    McpServersConfig,
+    ServerConnection,
+    ServerStatus,
+    UpstreamServerConfig
 } from './types.js';
 
 export class UpstreamManager extends EventEmitter {
@@ -78,6 +78,93 @@ export class UpstreamManager extends EventEmitter {
     
     console.log(`📊 Connection initialization complete (${totalDuration}ms): ${successCount} successful, ${failureCount} failed, avg: ${avgDuration}ms`);
     this.emit('initialized', { successCount, failureCount, totalDuration, avgDuration, timings });
+  }
+
+  /**
+   * Update connections based on new configuration
+   * This method handles adding new servers, removing old ones, and updating existing ones
+   */
+  async updateConnections(newConfig: McpServersConfig): Promise<void> {
+    const updateStart = Date.now();
+    console.log(`🔄 Updating upstream connections based on configuration changes...`);
+
+    const newServerNames = new Set(Object.keys(newConfig.mcpServers));
+    const currentServerNames = new Set(this.getServerNames());
+
+    // Find servers to add, remove, and update
+    const serversToAdd = Array.from(newServerNames).filter(name => !currentServerNames.has(name));
+    const serversToRemove = Array.from(currentServerNames).filter(name => !newServerNames.has(name));
+    const serversToUpdate = Array.from(newServerNames).filter(name => {
+      if (!currentServerNames.has(name)) return false;
+      
+      const currentConfig = this.connections.get(name)?.config;
+      const newServerConfig = newConfig.mcpServers[name];
+      
+      // Simple config comparison - in a real implementation you might want more sophisticated comparison
+      return JSON.stringify(currentConfig) !== JSON.stringify(newServerConfig);
+    });
+
+    console.log(`📋 Configuration changes detected:`);
+    console.log(`  ➕ Servers to add: ${serversToAdd.length}`);
+    console.log(`  ➖ Servers to remove: ${serversToRemove.length}`);
+    console.log(`  🔄 Servers to update: ${serversToUpdate.length}`);
+
+    // Remove servers that are no longer in configuration
+    for (const serverName of serversToRemove) {
+      try {
+        console.log(`🗑️  Removing server: ${serverName}`);
+        await this.removeServer(serverName);
+        console.log(`✅ Removed server: ${serverName}`);
+      } catch (error) {
+        console.error(`❌ Failed to remove server ${serverName}:`, error);
+      }
+    }
+
+    // Update existing servers with new configuration
+    for (const serverName of serversToUpdate) {
+      try {
+        console.log(`🔄 Updating server: ${serverName}`);
+        await this.removeServer(serverName);
+        await this.addServer(serverName, newConfig.mcpServers[serverName]);
+        console.log(`✅ Updated server: ${serverName}`);
+      } catch (error) {
+        console.error(`❌ Failed to update server ${serverName}:`, error);
+      }
+    }
+
+    // Add new servers
+    const addPromises = serversToAdd.map(async (serverName) => {
+      try {
+        console.log(`➕ Adding new server: ${serverName}`);
+        await this.addServer(serverName, newConfig.mcpServers[serverName]);
+        console.log(`✅ Added server: ${serverName}`);
+        return { name: serverName, success: true };
+      } catch (error) {
+        console.error(`❌ Failed to add server ${serverName}:`, error);
+        return { name: serverName, success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+      }
+    });
+
+    const addResults = await Promise.allSettled(addPromises);
+    const successfulAdds = addResults.filter(result => 
+      result.status === 'fulfilled' && result.value.success
+    ).length;
+    const failedAdds = addResults.length - successfulAdds;
+
+    const totalDuration = Date.now() - updateStart;
+    console.log(`📊 Configuration update complete (${totalDuration}ms):`);
+    console.log(`  ✅ Removed: ${serversToRemove.length} servers`);
+    console.log(`  ✅ Updated: ${serversToUpdate.length} servers`);
+    console.log(`  ✅ Added: ${successfulAdds} servers`);
+    console.log(`  ❌ Failed to add: ${failedAdds} servers`);
+
+    this.emit('configurationUpdated', {
+      added: serversToAdd.length,
+      removed: serversToRemove.length,
+      updated: serversToUpdate.length,
+      failed: failedAdds,
+      totalDuration
+    });
   }
 
   /**

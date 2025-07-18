@@ -5,19 +5,18 @@
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import {
+  CallToolRequestSchema,
+  GetPromptRequestSchema,
+  ListPromptsRequestSchema,
+  ListResourcesRequestSchema,
+  ListToolsRequestSchema,
+  ReadResourceRequestSchema,
+} from '@modelcontextprotocol/sdk/types.js';
 import express from 'express';
+import { CapabilityRegistry } from './CapabilityRegistry.js';
 import { ConfigLoader } from './ConfigLoader.js';
 import { UpstreamManager } from './UpstreamManager.js';
-import { CapabilityRegistry } from './CapabilityRegistry.js';
-import {
-  ListToolsRequestSchema,
-  CallToolRequestSchema,
-  ListResourcesRequestSchema,
-  ReadResourceRequestSchema,
-  ListPromptsRequestSchema,
-  GetPromptRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import { setInterval } from 'timers';
 
 /**
  * Command line options interface
@@ -80,7 +79,7 @@ Options:
   --port=<number>     Server port (default: 3000)
   --host=<string>     Server host (default: localhost)
   --no-cors           Disable CORS (default: enabled)
-  --config=<path>     Configuration file path (default: config/mcpServers.json)
+  --config=<path>     Configuration file path (default: config/mcp_servers.json)
   --help, -h          Show this help message
 
 Examples:
@@ -368,6 +367,19 @@ export class McpHub {
         this.logSummary();
       });
 
+      // Start watching configuration file for changes
+      if (this.options.config) {
+        await this.startConfigFileWatcher();
+      } else {
+        // Try to watch the default config file
+        const defaultConfigPath = 'config/mcp_servers.json';
+        try {
+          await this.startConfigFileWatcher(defaultConfigPath);
+        } catch (error) {
+          console.log(`ℹ️  Configuration file watching not available: ${error instanceof Error ? error.message : 'Unknown error'}`);
+        }
+      }
+
       console.log(`⚡ 1mcp started successfully (${Date.now() - startTime}ms) - capability discovery continues in background`);
 
     } catch (error) {
@@ -376,7 +388,29 @@ export class McpHub {
     }
   }
 
-
+  /**
+   * Start watching configuration file for changes
+   */
+  private async startConfigFileWatcher(configPath?: string): Promise<void> {
+    const pathToWatch = configPath || this.options.config || 'config/mcp_servers.json';
+    
+    await ConfigLoader.startWatching(pathToWatch, async (newConfig) => {
+      try {
+        console.log(`🔄 Configuration file changed, updating upstream connections...`);
+        
+        // Update upstream connections based on new configuration
+        await this.upstreamManager.updateConnections(newConfig);
+        
+        // Log updated summary
+        this.logSummary();
+        
+        console.log(`✅ Configuration update completed successfully`);
+        
+      } catch (error) {
+        console.error(`❌ Failed to update configuration:`, error);
+      }
+    });
+  }
 
   /**
    * Copy request handlers from main server to connection server
@@ -530,6 +564,8 @@ export class McpHub {
   private async startStreamableHttp(): Promise<void> {
     const app = express();
     
+
+    
     // Enable CORS if configured
     if (this.options.cors) {
       app.use((req, res, next) => {
@@ -575,21 +611,10 @@ export class McpHub {
       });
     });
 
-    // Store active Streamable HTTP connections with cleanup
+
+
+    // Store active Streamable HTTP connections
     const activeConnections = new Map<string, { transport: StreamableHTTPServerTransport; server: Server; lastActivity: Date }>();
-    
-    // Cleanup old sessions periodically (every 5 minutes)
-    const _cleanupInterval = setInterval(() => {
-      const now = Date.now();
-      const sessionTimeout = 30 * 60 * 1000; // 30 minutes
-      
-      for (const [sessionId, connection] of activeConnections.entries()) {
-        if (now - connection.lastActivity.getTime() > sessionTimeout) {
-          console.log(`🧹 Cleaning up inactive session: ${sessionId}`);
-          activeConnections.delete(sessionId);
-        }
-      }
-    }, 5 * 60 * 1000);
 
     // Handle Streamable HTTP requests - create new server instance for each session
     app.all('/mcp', async (req, res) => {
@@ -643,6 +668,7 @@ export class McpHub {
         // Get the appropriate transport for this session
         const connection = activeConnections.get(sessionId);
         if (!connection) {
+          console.warn(`⚠️  Session not found: ${sessionId}. Active sessions: ${Array.from(activeConnections.keys()).join(', ')}`);
           res.status(400).json({
             jsonrpc: '2.0',
             id: null,
@@ -743,6 +769,9 @@ export class McpHub {
     console.log('🔄 Shutting down 1mcp...');
 
     const promises: Promise<void>[] = [];
+
+    // Stop all configuration file watchers
+    ConfigLoader.stopAllWatchers();
 
     if (this.httpServer) {
       promises.push(new Promise(resolve => this.httpServer.close(() => resolve())));
