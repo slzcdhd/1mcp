@@ -546,6 +546,12 @@ export class UpstreamManager extends EventEmitter {
     const timeout = setTimeout(async () => {
       this.reconnectTimeouts.delete(name);
       
+      // Check if server still exists before attempting to reconnect
+      if (!this.connectors.has(name) || !this.connections.has(name)) {
+        console.log(`ℹ️  Server ${name} was removed from configuration, skipping reconnection`);
+        return;
+      }
+      
       try {
         await this.connectServer(name);
       } catch (error) {
